@@ -201,10 +201,17 @@
 
   text = text.replace(/\bWritten\s*[\u2013\u2014-]\s*By\b/gi, "Written–By");
 
-  // A1Title -> A1 Title
-  text = text.replace(/(^|\n)([A-Z](?:\d+)?)(?=[A-Za-z])/g, "$1$2 ");
-  // 纯数字曲号：1Title -> 1 Title  （同时兼容 10Title）
-  text = text.replace(/(^|\n)(\d{1,3})(?=[A-Za-z])/g, "$1$2 ");
+  // 1) A1Title -> A1 Title（字母+数字的曲号）
+  //    只要后面是非空字符就补空格
+  text = text.replace(/(^|\n)([A-Z]\d+)(?=\S)/g, "$1$2 ");
+
+  // 2) ATitle -> A Title（只有字母的曲号：A/B/C/D...）
+  //    仅当后面是“大写字母或数字”才补空格，避免 I ntro / I srael
+  text = text.replace(/(^|\n)([A-Z])(?=[A-Z0-9])/g, "$1$2 ");
+
+  // 3) 1Title -> 1 Title（纯数字曲号）
+  //    同样仅当后面是“大写字母或数字”才补空格
+  text = text.replace(/(^|\n)(\d{1,3})(?=[A-Z0-9])/g, "$1$2 ");
 
   // Title 后遇到人员信息关键词时换行（补全更多关键字，兼容 Written–By / Co–producer）
   text = text.replace(
