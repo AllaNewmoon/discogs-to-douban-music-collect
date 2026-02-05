@@ -19,7 +19,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return;
       }
 
-      // ✅ 新增：下载封面
+      // ✅ 下载封面
       if (msg?.type === "DOWNLOAD_COVER") {
         const url = msg.url;
         const filename = msg.filename || "douban_cover.jpg";
@@ -40,7 +40,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       
       
 
-      // ✅ 新增：解析 Discogs artist 页面，拿更完整的艺人名（优先 Real Name，其次 og:title）
+      // ✅ 解析 Discogs artist 页面，拿更完整的艺人名（优先 Real Name，其次 og:title）
       if (msg?.type === "RESOLVE_ARTISTS") {
         const urls = Array.isArray(msg.urls) ? msg.urls : [];
         if (!urls.length) {
@@ -61,7 +61,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
 
         function decodeHtmlEntities(str) {
-          // service worker 没有 DOMParser 也能用的简易解码（覆盖常见实体足够）
+          // service worker 没有 DOMParser 也能用的简易解码
           return String(str || "")
             .replace(/&amp;/g, "&")
             .replace(/&quot;/g, '"')

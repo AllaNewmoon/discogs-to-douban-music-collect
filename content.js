@@ -27,35 +27,6 @@
         .replace(/[ \t]+/g, " ")
         .trim();
 
-    // ===== ✅ NEW: 无曲号“纯曲目表”判定（命中就不缩进，不做 credits 逻辑）=====
-    // 特征：
-    // 1) 大部分非空行都以时长结尾（xx:xx）
-    // 2) 行里几乎没有 " – "（Role – Name 这种 credits 特征）
-    // 3) 行首也几乎没有 A1/B2/1/A 这类曲号
-    const endsWithDur = (s) => /\b\d{1,2}:\d{2}\b\s*$/.test(String(s || "").trim());
-    const hasDashRole = (s) => /\s–\s/.test(String(s || "").trim());
-    const hasIndexPrefix = (s) => /^([A-Z]\d{1,3}|[A-Z]|\d{1,3})\s+\S/.test(String(s || "").trim());
-
-    const filtered = lines0
-      .map((l) => String(l || "").trim())
-      .filter((l) => l && !dropLine(l));
-
-    if (filtered.length >= 4) {
-      const durCnt = filtered.filter(endsWithDur).length;
-      const dashCnt = filtered.filter(hasDashRole).length;
-      const idxCnt = filtered.filter(hasIndexPrefix).length;
-
-      const durRatio = durCnt / filtered.length;
-      const dashRatio = dashCnt / filtered.length;
-      const idxRatio = idxCnt / filtered.length;
-
-      // “纯曲目表”：时长占比高；credits 特征低；曲号占比低
-      if (durRatio >= 0.7 && dashRatio <= 0.15 && idxRatio <= 0.2) {
-        // 删除 Tracklist/Hide Credits 等后，按“每行一首歌”输出，曲目间空行
-        return filtered.join("\n\n").trim();
-      }
-    }
-
     // credits 关键词（用于“无曲号”情况下避免误判）
     const CREDIT_KEYS = [
       "Featuring", "Feat\\.?","Ft\\.?",
@@ -70,21 +41,19 @@
     ];
     const creditRe = new RegExp(`^(?:${CREDIT_KEYS.join("|")})\\b`, "i");
 
-    // ===== 标题识别（核心修复）=====
+    // ===== 统一曲号识别（只要是曲号开头，就算 header）=====
+    const trackTokenRe = /^([A-Z]\d{1,3}|[A-Z]|\d{1,3})\b/;
+
+    // ===== 标题识别（按你的意思改写）=====
     function isHeader(line, prevLine) {
       const s = norm(line);
       if (!s) return false;
       if (dropLine(s) || isDurationOnly(s)) return false;
 
-      // 1) 明确曲号：A1 / B2 / C10 ...
-      if (/^[A-Z]\d{1,3}\s+\S/.test(s)) return true;
-      // 2) 纯字母曲号：A / B / C ...
-      if (/^[A-Z]\s+\S/.test(s)) return true;
-      // 3) 纯数字曲号：1 / 12 / 101 ...
-      if (/^\d{1,3}\s+\S/.test(s)) return true;
+      // ✅ 你的规则：只要开头是曲号，无条件当 header（不管这一行里有没有 –）
+      if (trackTokenRe.test(s)) return true;
 
-      // 4) 无曲号标题：必须是“空行后出现”的非 credits 行，
-      //    且标题行不能包含 " – "（防止 Electric Guitar – ... 被当标题）
+      // 无曲号标题：必须空行后出现 + 不能是 credits + 不能是 “X – Y”
       const prevIsBlank = !String(prevLine || "").trim();
       if (!prevIsBlank) return false;
       if (creditRe.test(s)) return false;
@@ -93,26 +62,61 @@
       return true;
     }
 
+    // ===== [PATCH] 修复 “– 被拆成单独一行” 的情况 =====
+    // 只在这种模式下合并：
+    //   上一行是 header（有曲号） + 当前行只有 – + 下一行存在且不是时长/不是 dropLine
+    const isDashOnlyLine = (l) => /^[\s]*[–—-][\s]*$/.test(String(l || ""));
+    const merged = [];
+
+    for (let i = 0; i < lines0.length; i++) {
+      const curRaw = lines0[i];
+      const cur = norm(curRaw);
+
+      if (!cur) {
+        merged.push(""); // 保留空行
+        continue;
+      }
+      if (dropLine(cur)) continue;
+
+      if (isDashOnlyLine(curRaw)) {
+        const prev = merged.length ? merged[merged.length - 1] : "";
+        const nextRaw = lines0[i + 1] || "";
+        const next = norm(nextRaw);
+
+        // ✅ 只有“上一行是曲号标题”才合并
+        if (prev && trackTokenRe.test(norm(prev)) && next && !dropLine(next) && !isDurationOnly(next)) {
+          merged[merged.length - 1] = `${norm(prev)} – ${next}`.trim();
+          i++; // skip next
+          continue;
+        }
+
+        // 否则丢掉这个孤立的 “–”
+        continue;
+      }
+
+      merged.push(curRaw);
+    }
+
+    // 重新归一化一遍（把 merged 里的 raw 统一到 norm）
+    const lines1 = merged.map((l) => norm(l));
+
     // ===== 分块 =====
     const blocks = [];
     let cur = [];
 
-    for (let i = 0; i < lines0.length; i++) {
-      const raw = lines0[i];
-      const line = norm(raw);
-      const prevRaw = lines0[i - 1] ?? "";
+    for (let i = 0; i < lines1.length; i++) {
+      const line = lines1[i];
+      const prevRaw = lines1[i - 1] ?? "";
 
-      // 保留空行：作为无曲号分隔用
       if (!line) {
-        // 记录空行到块里（只要块里已经有内容）
         if (cur.length) cur.push("");
         continue;
       }
       if (dropLine(line)) continue;
 
-      if (isHeader(raw, prevRaw)) {
+      if (isHeader(line, prevRaw)) {
         if (cur.length) blocks.push(cur);
-        cur = [norm(raw)];
+        cur = [line];
         continue;
       }
       cur.push(line);
@@ -127,7 +131,6 @@
         .toLowerCase();
 
     for (const blk0 of blocks) {
-      // 去掉块首尾多余空行
       const blk = blk0.slice();
       while (blk.length && !blk[0].trim()) blk.shift();
       while (blk.length && !blk[blk.length - 1].trim()) blk.pop();
@@ -136,25 +139,21 @@
       let header = blk[0];
       let lastDur = "";
 
-      // 收集独立时长行
       for (let i = 1; i < blk.length; i++) {
         if (isDurationOnly(blk[i])) lastDur = blk[i].trim();
       }
 
-      // 删除独立时长行
       const body = blk.slice(1).filter((l) => !isDurationOnly(l));
 
-      // 拼回标题行末尾
       if (lastDur && !/\b\d{1,2}:\d{2}\b\s*$/.test(header)) {
         header = `${header} ${lastDur}`.trim();
       }
 
-      // 块内去重（仅去重非标题行）
       const seen = new Set();
       const formatted = [header];
 
       for (const l of body) {
-        if (!l.trim()) continue; // 块内空行直接丢（避免 credits 被拆成两段）
+        if (!l.trim()) continue;
         const key = normLineKey(l);
         if (seen.has(key)) continue;
         seen.add(key);
