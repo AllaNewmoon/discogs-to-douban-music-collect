@@ -5,6 +5,102 @@
   const DOUBAN_NEW_SUBJECT = "https://music.douban.com/new_subject";
 
   /* -------------------- utils -------------------- */
+  // 自动选择流派、专辑类型和介质
+  // 自动选择流派、专辑类型和介质
+  function autoSelectGenreTypeMedia(draft) {
+    // 定义英文到中文的映射
+    const genreMapping = {
+      "Rock": "Rock 摇滚",
+      "Jazz": "Jazz 爵士",
+      "Pop": "Pop 流行",
+      "Hip Hop": "Rap 说唱",
+      "Electronic": "Electronic 电子",
+      "Reggae": "Reggee 雷鬼",
+      // 添加更多的映射...
+    };
+
+    const typeMapping = {
+      "Album": "专辑",
+      "Single": "单曲",
+      "EP": "EP",
+      // 添加更多的映射...
+    };
+
+    const mediaMapping = {
+      "Vinyl": "黑胶",
+      "CD": "CD",
+      "Digital": "数字",
+      // 添加更多的映射...
+    };
+
+    // 获取流派、专辑类型、介质的选择框
+    const labels = document.querySelectorAll('label.selected');
+    const genreSelect = labels[0];
+    const typeSelect = labels[1];
+    const mediaSelect = labels[2];
+
+    // 调试信息：检查是否获取到选择框
+    console.log("Genre Select:", genreSelect);
+    console.log("Type Select:", typeSelect);
+    console.log("Media Select:", mediaSelect);
+    console.log("Draft genre:", draft.genre); // 打印流派值，确保它不为空
+
+    // 如果流派选择框存在且draft.genre有值，则选择相应的流派
+    if (genreSelect && draft.genre) {
+      labels[0].click();
+      const genreInChinese = genreMapping[draft.genre] || draft.genre;  // 转换为中文，如果没有找到映射则使用原值
+      console.log("Searching for genre:", genreInChinese);
+      const genreOption = Array.from(document.querySelectorAll('.sub'))
+        .find(opt => opt.textContent.trim() === genreInChinese.trim());
+      
+      if (genreOption) {
+        console.log("Genre found:", genreOption.textContent);
+        genreOption.click();
+      } else {
+        console.log("Genre not found for:", genreInChinese);
+      }
+    } else {
+      console.log("No genre select element or draft.genre is empty.");
+    }
+
+    // 如果专辑类型选择框存在且draft.releaseType有值，则选择相应的专辑类型
+    if (typeSelect && draft.releaseType) {
+      labels[1].click();
+      const typeInChinese = typeMapping[draft.releaseType] || draft.releaseType;  // 转换为中文
+      console.log("Searching for release type:", typeInChinese);
+      const typeOption = Array.from(document.querySelectorAll('.sub'))
+        .find(opt => opt.textContent.trim() === typeInChinese.trim());
+      
+      if (typeOption) {
+        console.log("Release type found:", typeOption.textContent);
+        typeOption.click();
+      } else {
+        console.log("Release type not found for:", typeInChinese);
+      }
+    } else {
+      console.log("No type select element or draft.releaseType is empty.");
+    }
+
+    // 如果介质选择框存在且draft.media有值，则选择相应的介质
+    if (mediaSelect && draft.media) {
+      labels[2].click();
+      const mediaInChinese = mediaMapping[draft.media] || draft.media;  // 转换为中文
+      console.log("Searching for media:", mediaInChinese);
+      const mediaOption = Array.from(document.querySelectorAll('.sub'))
+        .find(opt => opt.textContent.trim() === mediaInChinese.trim());
+      
+      if (mediaOption) {
+        console.log("Media found:", mediaOption.textContent);
+        mediaOption.click();
+      } else {
+        console.log("Media not found for:", mediaInChinese);
+      }
+    } else {
+      console.log("No media select element or draft.media is empty.");
+    }
+  }
+
+
   function prettifyDiscogsTracklist(text) {
     const lines0 = String(text || "")
       .replace(/\r/g, "")
@@ -261,6 +357,7 @@
     return [parts[0] || "", parts[1] || "", parts[2] || ""];
   }
 
+
   function normalizeDateToYYYYMMDD(raw) {
   let t = cleanText(raw);
   if (!t) return "";
@@ -351,88 +448,6 @@
 
   return "";
 }
-
-  /* -------------------- Track/Credit normalization config -------------------- */
-
-  // ✅ 以后只要在这里加词：Vibraphone / Drum / Flute / etc.
-  const CREDIT_ROLES = [
-    "Featuring",
-    "Vocals", "Vocal",
-    "Guitar",
-    "Horns", "Horn",
-    "Percussion",
-    "Drums", "Drum",
-    "Bass",
-    "Keyboards", "Keyboard",
-    "Synth",
-    "Piano",
-    "Organ",
-    "Strings", "String",
-    "Vibraphone",
-    "Engineer",
-    "Producer",
-    "Executive Producer",
-    "Written–By", "Written-By",
-    "Mixed By",
-    "Mastered By",
-    "Arranged By",
-    "Composed By",
-    "Co–producer", "Co-producer",
-    "Co–written–By", "Co-written-By",
-  ];
-
-  function escapeRe(s) {
-    return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  }
-
-  // 统一把各种 Written – By / Written-By -> Written–By
-  function normalizeWrittenBy(s) {
-    return String(s || "").replace(/\bWritten\s*[\u2013\u2014-]\s*By\b/gi, "Written–By");
-  }
-
-  // ✅ 用于“去重”的统一 key：去掉方括号注释、统一 dash 和空格
-  function normCreditKey(s) {
-    return normalizeWrittenBy(String(s || ""))
-      // 清掉不可见字符
-      .replace(/[\u00A0\u200B-\u200D\uFEFF]/g, " ")
-      // 去掉 [Percussion By] 这类注释
-      .replace(/\s*\[[^\]]*\]\s*/g, " ")
-      // dash 统一
-      .replace(/[—-]/g, "–")
-      // 逗号两侧空格统一（Vibraphone , -> Vibraphone,）
-      .replace(/\s*,\s*/g, ", ")
-      .replace(/,\s*,/g, ", ")
-      // “–” 两侧空格统一
-      .replace(/\s*–\s*/g, " – ")
-      // 合并多空格
-      .replace(/[ \t]+/g, " ")
-      .trim()
-      // 去掉末尾多余逗号
-      .replace(/,\s*$/g, "");
-  }
-
-  // ✅ credits 关键词正则（自动包含你上面的 CREDIT_ROLES）
-  const CREDIT_ROLE_TOKEN = CREDIT_ROLES
-    .map(escapeRe)
-    .join("|");
-
-  // role-group: "Producer, Written–By – " 这类
-  const ROLE_GROUP_RE = new RegExp(
-    `\\b(?:${CREDIT_ROLE_TOKEN})\\b(?:\\s*,\\s*\\b(?:${CREDIT_ROLE_TOKEN})\\b)*\\s*–\\s*`,
-    "g"
-  );
-
-  // “遇到这些词就换行”的 lookahead
-  const CREDIT_LOOKAHEAD_RE = new RegExp(
-    `(–[^\\n]+?)(?=(${CREDIT_ROLE_TOKEN}))`,
-    "g"
-  );
-
-  // 换行后缩进："\nRole" -> "\n    Role"
-  const CREDIT_INDENT_RE = new RegExp(
-    `\\n(${CREDIT_ROLE_TOKEN})`,
-    "g"
-  );
 
 
   /* -------------------- page detection -------------------- */
@@ -888,7 +903,7 @@
     if (btn) btn.click();
   }
 
-  function fillDoubanStep2(draft) {
+  async function fillDoubanStep2(draft) {
     const albumTitle = draft.album || "";
     const releaseDate = draft.date || "";
     const label = draft.label || "";
@@ -967,8 +982,11 @@
         if (performerInputs[1] && a1) setValue(performerInputs[1], a1);
         if (performerInputs[2] && a2) setValue(performerInputs[2], a2);
       }
+      
 
-      // 参考资料：这里仍然保留 Discogs url（通常审核不会卡），如果你也想去掉我再给你改成纯文本 id
+      autoSelectGenreTypeMedia(draft);
+
+      // 参考资料：这里仍然保留 Discogs url
       const ref = document.querySelector("textarea[name='p_152_other']");
       if (ref) setValue(ref, draft.url || "");
     } catch (e) {}
