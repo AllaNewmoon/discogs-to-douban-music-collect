@@ -199,8 +199,10 @@
     .replace(/\n{2,}/g, "\n")
     .trim();
 
+  text = text.replace(/\bWritten\s*[\u2013\u2014-]\s*By\b/gi, "Written–By");
+
   // A1Title -> A1 Title
-  text = text.replace(/(^|\n)([A-Z]\d+)(?=[A-Za-z])/g, "$1$2 ");
+  text = text.replace(/(^|\n)([A-Z](?:\d+)?)(?=[A-Za-z])/g, "$1$2 ");
   // 纯数字曲号：1Title -> 1 Title  （同时兼容 10Title）
   text = text.replace(/(^|\n)(\d{1,3})(?=[A-Za-z])/g, "$1$2 ");
 
@@ -221,27 +223,56 @@
     "(?:Co–producer|Co-producer|Producer|Executive\\s*Producer|Written–By|Written-By|Engineer|Mixed\\s*By|Mastered\\s*By|Vocals?|Guitar|Horns?|Percussion|Drums?|Bass|Keyboards?|Synth|Piano|Organ|Strings?)";
   const roleGroupRe2 = new RegExp(`(\\b${roles2}\\b(?:\\s*,\\s*\\b${roles2}\\b)*)\\s*–\\s*`, "g");
   text = text.replace(roleGroupRe2, "\n    $1 – ");
-
-  // 去重：连续重复行 + 全局重复行
+  text = text.replace(
+    /^([A-Z]\d*|\d{1,3})\s+([^\n]+?)(Written–By\s*–\s*)/gm,
+    "$1 $2\n    $3"
+  );
+  // 去重：连续重复行 + “单曲目块内”重复行（不要跨曲目全局去重）
   const lines = text.split("\n");
   const out = [];
-  const seen = new Set();
+
+  // 关键：把容易出现“同义不同写法”的行统一成同一个 key
+  const normKey = (s) =>
+    String(s || "")
+      .replace(/[—-]/g, "–") // 统一 dash
+      .replace(/\bWritten\s*[\u2013\u2014-]\s*By\b/gi, "Written–By") // Written-By / Written – By -> Written–By
+      .replace(/\s*–\s*/g, " – ") // 统一 “–” 两侧空格
+      .replace(/[ \t]+/g, " ") // 合并空格
+      .trim();
+
+  // 识别“曲目标题行”（A / A1 / B2 / 1 / 12 ...）
+  const isTrackHeader = (s) => /^([A-Z](?:\d+)?|\d{1,3})\s+/.test(String(s || "").trim());
+
+  // 每个曲目块内单独去重（避免 A/B 两首同一个 Written-By 被误删）
+  let seenInTrack = new Set();
+
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].replace(/[ \t]+/g, " ").trimEnd();
-    const key = line.trim();
+    const raw = lines[i];
+    const line = String(raw || "").replace(/[ \t]+/g, " ").trimEnd();
+    const key = normKey(line);
+
     if (!key) {
       if (out.length && out[out.length - 1] === "") continue;
       out.push("");
       continue;
     }
-    // 连续重复
-    if (i > 0 && key === lines[i - 1].trim()) continue;
-    // 全局重复（你那种重复两遍 credits）
-    if (seen.has(key) && key.startsWith("    ")) continue;
-    seen.add(key);
+
+    // 进入新曲目：重置“块内去重集合”
+    if (isTrackHeader(key)) {
+      seenInTrack = new Set();
+      out.push(line);
+      continue;
+    }
+
+    // 连续重复（用 normKey 对上一行同样规范化）
+    if (i > 0 && key === normKey(lines[i - 1])) continue;
+
+    // 块内重复（只在当前曲目里去重）
+    if (seenInTrack.has(key)) continue;
+    seenInTrack.add(key);
+
     out.push(line);
   }
-
   // 每个曲目之间加空行（识别 A1/A2/B1... 行首）
   return out
   .join("\n")
@@ -261,7 +292,8 @@ function compactTracksByBlocks(text) {
   const lines = t.split("\n");
 
   // 识别曲目标题行：A1 / A2 / B1 / C3 ...
-  const isHeader = (s) => /^[A-Z]\d+\s+/.test(String(s || "").trim());
+  const isHeader = (s) =>
+  /^[A-Z](?:\d+)?\s+/.test(String(s || "").trim());
 
   const blocks = [];
   let cur = [];
@@ -283,7 +315,9 @@ function compactTracksByBlocks(text) {
   const normKey = (s) =>
     String(s || "")
       .replace(/[—-]/g, "–")
+      .replace(/\bWritten\s*[\u2013\u2014-]\s*By\b/gi, "Written–By")
       .replace(/[ \t]+/g, " ")
+      .replace(/\s*–\s*/g, " – ")
       .replace(/(\d{1,2}:\d{2})\s*$/g, "") // 去掉行尾时长（有无空格都行）
       .trim();
 
@@ -399,7 +433,10 @@ function compactTracksByBlocks(text) {
     line = line.replace(/^([A-Z]\d+)(?=\S)/, "$1 ");
 
     // 把 “X–Y” 两侧空格规整，但不强制加空格（避免破坏你原结构）
-    line = line.replace(/\s*–\s*/g, "–");
+    line = line.replace(
+      /\b(Co–producer|Co-producer|Producer|Executive Producer|Written–By|Written-By|Engineer|Mixed By|Mastered By|Vocals?|Guitar|Horns?|Percussion|Drums?|Bass|Keyboards?|Synth|Piano|Organ|Strings?)\b\s*–\s*/g,
+      "$1 – "
+    );
 
     // 抽取末尾时长（3:49 / 12:34）
     let dur = "";
