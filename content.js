@@ -5,6 +5,169 @@
   const DOUBAN_NEW_SUBJECT = "https://music.douban.com/new_subject";
 
   /* -------------------- utils -------------------- */
+  function prettifyDiscogsTracklist(text) {
+    const lines0 = String(text || "")
+      .replace(/\r/g, "")
+      .split("\n")
+      // 保留空行（很关键：用于“无曲号”分隔）
+      .map((l) => l.replace(/[ \t]+/g, " ").trimEnd());
+
+    const dropLine = (l) =>
+      /^tracklist$/i.test(l.trim()) ||
+      /^hide credits$/i.test(l.trim()) ||
+      /^show credits$/i.test(l.trim()) ||
+      /^credits$/i.test(l.trim());
+
+    const isDurationOnly = (l) => /^\s*\d{1,2}:\d{2}\s*$/.test(l);
+
+    const norm = (s) =>
+      String(s || "")
+        .replace(/[—-]/g, "–")
+        .replace(/\s*–\s*/g, " – ")
+        .replace(/[ \t]+/g, " ")
+        .trim();
+
+    // ===== ✅ NEW: 无曲号“纯曲目表”判定（命中就不缩进，不做 credits 逻辑）=====
+    // 特征：
+    // 1) 大部分非空行都以时长结尾（xx:xx）
+    // 2) 行里几乎没有 " – "（Role – Name 这种 credits 特征）
+    // 3) 行首也几乎没有 A1/B2/1/A 这类曲号
+    const endsWithDur = (s) => /\b\d{1,2}:\d{2}\b\s*$/.test(String(s || "").trim());
+    const hasDashRole = (s) => /\s–\s/.test(String(s || "").trim());
+    const hasIndexPrefix = (s) => /^([A-Z]\d{1,3}|[A-Z]|\d{1,3})\s+\S/.test(String(s || "").trim());
+
+    const filtered = lines0
+      .map((l) => String(l || "").trim())
+      .filter((l) => l && !dropLine(l));
+
+    if (filtered.length >= 4) {
+      const durCnt = filtered.filter(endsWithDur).length;
+      const dashCnt = filtered.filter(hasDashRole).length;
+      const idxCnt = filtered.filter(hasIndexPrefix).length;
+
+      const durRatio = durCnt / filtered.length;
+      const dashRatio = dashCnt / filtered.length;
+      const idxRatio = idxCnt / filtered.length;
+
+      // “纯曲目表”：时长占比高；credits 特征低；曲号占比低
+      if (durRatio >= 0.7 && dashRatio <= 0.15 && idxRatio <= 0.2) {
+        // 删除 Tracklist/Hide Credits 等后，按“每行一首歌”输出，曲目间空行
+        return filtered.join("\n\n").trim();
+      }
+    }
+
+    // credits 关键词（用于“无曲号”情况下避免误判）
+    const CREDIT_KEYS = [
+      "Featuring", "Feat\\.?","Ft\\.?",
+      "Written\\s*[–-]\\s*By","Written–By","Written-By",
+      "Producer","Co\\s*[–-]\\s*producer","Co–producer","Co-producer",
+      "Engineer","Mixed\\s*By","Mastered\\s*By",
+      "Vocals?","Guitar","Horns?","Percussion","Drums?","Bass",
+      "Keyboards?","Synth","Piano","Organ","Strings?","Vibraphone",
+      "Drum\\s*Programming",
+      "Arranged\\s*By","Orchestrated\\s*By","Conductor","Choir","Contractor",
+      "Composed\\s*By","Lyrics\\s*By"
+    ];
+    const creditRe = new RegExp(`^(?:${CREDIT_KEYS.join("|")})\\b`, "i");
+
+    // ===== 标题识别（核心修复）=====
+    function isHeader(line, prevLine) {
+      const s = norm(line);
+      if (!s) return false;
+      if (dropLine(s) || isDurationOnly(s)) return false;
+
+      // 1) 明确曲号：A1 / B2 / C10 ...
+      if (/^[A-Z]\d{1,3}\s+\S/.test(s)) return true;
+      // 2) 纯字母曲号：A / B / C ...
+      if (/^[A-Z]\s+\S/.test(s)) return true;
+      // 3) 纯数字曲号：1 / 12 / 101 ...
+      if (/^\d{1,3}\s+\S/.test(s)) return true;
+
+      // 4) 无曲号标题：必须是“空行后出现”的非 credits 行，
+      //    且标题行不能包含 " – "（防止 Electric Guitar – ... 被当标题）
+      const prevIsBlank = !String(prevLine || "").trim();
+      if (!prevIsBlank) return false;
+      if (creditRe.test(s)) return false;
+      if (s.includes(" – ")) return false;
+
+      return true;
+    }
+
+    // ===== 分块 =====
+    const blocks = [];
+    let cur = [];
+
+    for (let i = 0; i < lines0.length; i++) {
+      const raw = lines0[i];
+      const line = norm(raw);
+      const prevRaw = lines0[i - 1] ?? "";
+
+      // 保留空行：作为无曲号分隔用
+      if (!line) {
+        // 记录空行到块里（只要块里已经有内容）
+        if (cur.length) cur.push("");
+        continue;
+      }
+      if (dropLine(line)) continue;
+
+      if (isHeader(raw, prevRaw)) {
+        if (cur.length) blocks.push(cur);
+        cur = [norm(raw)];
+        continue;
+      }
+      cur.push(line);
+    }
+    if (cur.length) blocks.push(cur);
+
+    // ===== 块内处理：把单独的时长行拼回标题末尾；credits 行缩进；块内去重 =====
+    const out = [];
+    const normLineKey = (s) =>
+      norm(s)
+        .replace(/\bwritten\s*[–-]\s*by\b/gi, "Written–By")
+        .toLowerCase();
+
+    for (const blk0 of blocks) {
+      // 去掉块首尾多余空行
+      const blk = blk0.slice();
+      while (blk.length && !blk[0].trim()) blk.shift();
+      while (blk.length && !blk[blk.length - 1].trim()) blk.pop();
+      if (!blk.length) continue;
+
+      let header = blk[0];
+      let lastDur = "";
+
+      // 收集独立时长行
+      for (let i = 1; i < blk.length; i++) {
+        if (isDurationOnly(blk[i])) lastDur = blk[i].trim();
+      }
+
+      // 删除独立时长行
+      const body = blk.slice(1).filter((l) => !isDurationOnly(l));
+
+      // 拼回标题行末尾
+      if (lastDur && !/\b\d{1,2}:\d{2}\b\s*$/.test(header)) {
+        header = `${header} ${lastDur}`.trim();
+      }
+
+      // 块内去重（仅去重非标题行）
+      const seen = new Set();
+      const formatted = [header];
+
+      for (const l of body) {
+        if (!l.trim()) continue; // 块内空行直接丢（避免 credits 被拆成两段）
+        const key = normLineKey(l);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        formatted.push("    " + norm(l));
+      }
+
+      if (out.length) out.push("");
+      out.push(...formatted);
+    }
+
+    return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  }
+
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -190,196 +353,87 @@
   return "";
 }
 
-  // 你要求的：曲号后补空格 + 人员信息另起行 + 适当空行
-  function formatDiscogsTrackText(raw) {
-  if (!raw) return "";
+  /* -------------------- Track/Credit normalization config -------------------- */
 
-  let text = String(raw)
-    .replace(/\r/g, "")
-    .replace(/\n{2,}/g, "\n")
-    .trim();
+  // ✅ 以后只要在这里加词：Vibraphone / Drum / Flute / etc.
+  const CREDIT_ROLES = [
+    "Featuring",
+    "Vocals", "Vocal",
+    "Guitar",
+    "Horns", "Horn",
+    "Percussion",
+    "Drums", "Drum",
+    "Bass",
+    "Keyboards", "Keyboard",
+    "Synth",
+    "Piano",
+    "Organ",
+    "Strings", "String",
+    "Vibraphone",
+    "Engineer",
+    "Producer",
+    "Executive Producer",
+    "Written–By", "Written-By",
+    "Mixed By",
+    "Mastered By",
+    "Arranged By",
+    "Composed By",
+    "Co–producer", "Co-producer",
+    "Co–written–By", "Co-written-By",
+  ];
 
-  text = text.replace(/\bWritten\s*[\u2013\u2014-]\s*By\b/gi, "Written–By");
-
-  // ✅ NEW: 合并 “A 1” => “A1”（同理 B 2 / C 10）
-  text = text.replace(/(^|\n)([A-Z])\s+(\d{1,3})(?=\s)/g, "$1$2$3");
-  // 1) A1Title -> A1 Title（字母+数字的曲号）
-  //    只要后面是非空字符就补空格
-  text = text.replace(/(^|\n)([A-Z]\d+)(?=\S)/g, "$1$2 ");
-
-  // 2) ATitle -> A Title（只有字母的曲号：A/B/C/D...）
-  //    仅当后面是“大写字母或数字”才补空格，避免 I ntro / I srael
-  text = text.replace(/(^|\n)([A-Z])(?=[A-Z0-9])/g, "$1$2 ");
-
-  // 3) 1Title -> 1 Title（纯数字曲号）
-  //    同样仅当后面是“大写字母或数字”才补空格
-  text = text.replace(/(^|\n)(\d{1,3})(?=[A-Z0-9])/g, "$1$2 ");
-
-  // Title 后遇到人员信息关键词时换行（补全更多关键字，兼容 Written–By / Co–producer）
-  // ✅ NEW: Featuring 也当作 credits 关键词
-  text = text.replace(
-    /(–[^\n]+?)(?=(Featuring|Vocals|Guitar|Horns|Percussion|Drums|Bass|Keyboards|Synth|Piano|Organ|Strings|Engineer|Producer|Written–By|Written-By|Co–producer|Co-producer))/g,
-    "$1\n"
-  );
-
-  // 人员信息缩进（补全）
-  text = text.replace(
-    /\n(Vocals|Guitar|Horns|Percussion|Drums|Bass|Keyboards|Synth|Piano|Organ|Strings|Engineer|Producer|Written–By|Written-By|Co–producer|Co-producer)/g,
-    "\n    $1"
-  );
-
-  // ===== [FINAL PATCH] 强制把 role 行切开（防止 Queen 那种 Producer 后面又粘 Written–By） =====
-  const roles2 =
-    "(?:Co–producer|Co-producer|Producer|Executive\\s*Producer|Written–By|Written-By|Engineer|Mixed\\s*By|Mastered\\s*By|Vocals?|Guitar|Horns?|Percussion|Drums?|Bass|Keyboards?|Synth|Piano|Organ|Strings?)";
-  const roleGroupRe2 = new RegExp(`(\\b${roles2}\\b(?:\\s*,\\s*\\b${roles2}\\b)*)\\s*–\\s*`, "g");
-  text = text.replace(roleGroupRe2, "\n    $1 – ");
-  text = text.replace(
-    /^([A-Z]\d*|\d{1,3})\s+([^\n]+?)(Written–By\s*–\s*)/gm,
-    "$1 $2\n    $3"
-  );
-  // 去重：连续重复行 + “单曲目块内”重复行（不要跨曲目全局去重）
-  const lines = text.split("\n");
-  const out = [];
-
-  // 关键：把容易出现“同义不同写法”的行统一成同一个 key
-  const normKey = (s) =>
-    String(s || "")
-      .replace(/[—-]/g, "–") // 统一 dash
-      .replace(/\bWritten\s*[\u2013\u2014-]\s*By\b/gi, "Written–By") // Written-By / Written – By -> Written–By
-      .replace(/\s*–\s*/g, " – ") // 统一 “–” 两侧空格
-      .replace(/[ \t]+/g, " ") // 合并空格
-      .trim();
-
-  // 识别“曲目标题行”（A / A1 / B2 / 1 / 12 ...）
-  const isTrackHeader = (s) => /^([A-Z](?:\d+)?|\d{1,3})\s+/.test(String(s || "").trim());
-
-  // 每个曲目块内单独去重（避免 A/B 两首同一个 Written-By 被误删）
-  let seenInTrack = new Set();
-
-  for (let i = 0; i < lines.length; i++) {
-    const raw = lines[i];
-    const line = String(raw || "").replace(/[ \t]+/g, " ").trimEnd();
-    const key = normKey(line);
-
-    if (!key) {
-      if (out.length && out[out.length - 1] === "") continue;
-      out.push("");
-      continue;
-    }
-
-    // 进入新曲目：重置“块内去重集合”
-    if (isTrackHeader(key)) {
-      seenInTrack = new Set();
-      out.push(line);
-      continue;
-    }
-
-    // 连续重复（用 normKey 对上一行同样规范化）
-    if (i > 0 && key === normKey(lines[i - 1])) continue;
-
-    // 块内重复（只在当前曲目里去重）
-    if (seenInTrack.has(key)) continue;
-    seenInTrack.add(key);
-
-    out.push(line);
+  function escapeRe(s) {
+    return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
-  // 每个曲目之间加空行（识别 A1/A2/B1... 行首）
-  return out
-  .join("\n")
-  // ✅ 关键补丁：删掉“空白行(可含空格)+下一行是缩进credits”的情况
-  .replace(/\n[ \t]*\n(?=\s{4}\S)/g, "\n")
-  // 仍保持曲目之间空一行（只对曲目行开头）
-  .replace(/\n(?=[A-Z]\d+ )/g, "\n\n")
-  // 避免极端情况产生三行以上
-  .replace(/\n{3,}/g, "\n\n")
-  .trim();
-}
 
-function compactTracksByBlocks(text) {
-  const t = String(text || "").replace(/\r/g, "").trim();
-  if (!t) return "";
-
-  // ✅ NEW: 先把 “A 1 ” 合并成 “A1 ”
-  const t2 = t.replace(/(^|\n)([A-Z])\s+(\d{1,3})(?=\s)/g, "$1$2$3");
-  const lines = t2.split("\n");
-
-
-  // 识别曲目标题行：A1 / A2 / B1 / C3 ...
-  const isHeader = (s) =>
-  /^[A-Z](?:\d+)?\s+/.test(String(s || "").trim());
-
-  const blocks = [];
-  let cur = [];
-
-  for (const rawLine of lines) {
-    const line = String(rawLine || "").replace(/[ \t]+/g, " ").trim();
-    if (!line) continue;
-
-    if (isHeader(line)) {
-      if (cur.length) blocks.push(cur);
-      cur = [line];
-      continue;
-    }
-    cur.push(line);
+  // 统一把各种 Written – By / Written-By -> Written–By
+  function normalizeWrittenBy(s) {
+    return String(s || "").replace(/\bWritten\s*[\u2013\u2014-]\s*By\b/gi, "Written–By");
   }
-  if (cur.length) blocks.push(cur);
 
-  // 用于去重的规范化：统一 dash、合并空格、去掉行尾时长
-  const normKey = (s) =>
-    String(s || "")
+  // ✅ 用于“去重”的统一 key：去掉方括号注释、统一 dash 和空格
+  function normCreditKey(s) {
+    return normalizeWrittenBy(String(s || ""))
+      // 清掉不可见字符
+      .replace(/[\u00A0\u200B-\u200D\uFEFF]/g, " ")
+      // 去掉 [Percussion By] 这类注释
+      .replace(/\s*\[[^\]]*\]\s*/g, " ")
+      // dash 统一
       .replace(/[—-]/g, "–")
-      .replace(/\bWritten\s*[\u2013\u2014-]\s*By\b/gi, "Written–By")
-      .replace(/[ \t]+/g, " ")
+      // 逗号两侧空格统一（Vibraphone , -> Vibraphone,）
+      .replace(/\s*,\s*/g, ", ")
+      .replace(/,\s*,/g, ", ")
+      // “–” 两侧空格统一
       .replace(/\s*–\s*/g, " – ")
-      .replace(/(\d{1,2}:\d{2})\s*$/g, "") // 去掉行尾时长（有无空格都行）
-      .trim();
+      // 合并多空格
+      .replace(/[ \t]+/g, " ")
+      .trim()
+      // 去掉末尾多余逗号
+      .replace(/,\s*$/g, "");
+  }
 
-  const cleanedBlocks = blocks.map((blk) => {
-    // ===== [PATCH] 把块内任何行尾出现的时长挪到标题行末尾（兼容无空格黏连） =====
-    // 例： "Written–By – ...Tony McDaid3:08" -> 标题行末尾加 " 3:08"，该行删掉 3:08
-    const durations = [];
-    for (let i = 1; i < blk.length; i++) {
-      const m = blk[i].match(/(\d{1,2}:\d{2})\s*$/);
-      if (m) {
-        durations.push(m[1]);
-        blk[i] = blk[i].replace(/(\d{1,2}:\d{2})\s*$/g, "").trimEnd();
-      }
-    }
-    if (durations.length) {
-      // 通常一个块只有一个时长，取最后一个最稳
-      const dur = durations[durations.length - 1];
-      blk[0] = (blk[0] + " " + dur).replace(/[ \t]+/g, " ").trim();
-    }
+  // ✅ credits 关键词正则（自动包含你上面的 CREDIT_ROLES）
+  const CREDIT_ROLE_TOKEN = CREDIT_ROLES
+    .map(escapeRe)
+    .join("|");
 
-    // 块内去重（保留顺序）
-    const seen = new Set();
-    const out = [];
+  // role-group: "Producer, Written–By – " 这类
+  const ROLE_GROUP_RE = new RegExp(
+    `\\b(?:${CREDIT_ROLE_TOKEN})\\b(?:\\s*,\\s*\\b(?:${CREDIT_ROLE_TOKEN})\\b)*\\s*–\\s*`,
+    "g"
+  );
 
-    for (let i = 0; i < blk.length; i++) {
-      const line = blk[i];
-      if (!line) continue;
+  // “遇到这些词就换行”的 lookahead
+  const CREDIT_LOOKAHEAD_RE = new RegExp(
+    `(–[^\\n]+?)(?=(${CREDIT_ROLE_TOKEN}))`,
+    "g"
+  );
 
-      if (i === 0) {
-        out.push(line);
-        continue;
-      }
-
-      const key = normKey(line);
-      if (!key) continue;
-
-      if (seen.has(key)) continue;
-      seen.add(key);
-
-      out.push(line);
-    }
-
-    return out;
-  });
-
-  // 块内用单换行，块之间用双换行
-  return cleanedBlocks.map((blk) => blk.join("\n")).join("\n\n").trim();
-}
-
+  // 换行后缩进："\nRole" -> "\n    Role"
+  const CREDIT_INDENT_RE = new RegExp(
+    `\\n(${CREDIT_ROLE_TOKEN})`,
+    "g"
+  );
 
 
   /* -------------------- page detection -------------------- */
@@ -402,102 +456,6 @@ function compactTracksByBlocks(text) {
     if (nBasic > 2) return 2;
     return 0;
   }
-
-  /* -------------------- [PATCH] pre-format dense Discogs lines -------------------- */
-  // 说明：你的 raw trackText 在某些 Discogs 页面会被 cleanText 压扁成一行：
-  // A4 Pink Floyd– Another Brick... Co-producer – ... Producer – ... Written-By, Producer – ... 3:02
-  // 我们在送入 formatDiscogsTrackText() 之前，把它“恢复成多行结构”，这样原函数就能正常处理。
-  function preFormatDenseDiscogs(trackText) {
-  if (!trackText) return "";
-
-  let t = String(trackText).replace(/\r/g, "");
-
-  // 把各种 dash 统一成标准 en-dash：–
-  t = t.replace(/[—-]/g, "–");
-
-  // 逐行处理（注意：你的 trackText 可能已经被压扁/或半压扁）
-  const lines = t
-    .split("\n")
-    .map((x) => x.replace(/\s+/g, " ").trim())
-    .filter(Boolean);
-
-  const ROLE_WORDS = [
-    "Featuring", // ✅ NEW
-    "Co–producer", "Co-producer", "Producer", "Executive Producer",
-    "Written–By", "Written-By", "Co–written–By", "Co-written-By",
-    "Composed By", "Arranged By", "Engineer", "Mixed By", "Mastered By",
-    "Vocals", "Vocal", "Guitar", "Horns", "Percussion", "Drums", "Bass",
-    "Keyboards", "Synth", "Piano", "Organ", "Strings"
-  ];
-
-  // 把 role 变成一个大正则（兼容 role 之间逗号组合：Producer, Written–By）
-  const roleToken = ROLE_WORDS
-    .map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-    .join("|");
-
-  const roleGroupRe = new RegExp(
-    `\\b(?:${roleToken})\\b(?:\\s*,\\s*\\b(?:${roleToken})\\b)*\\s*–\\s*`,
-    "g"
-  );
-
-  const out = [];
-
-  for (let line of lines) {
-    // ✅ NEW: 合并 “A 1” => “A1 ”
-    line = line.replace(/^([A-Z])\s+(\d{1,3})(?=\S)/, "$1$2 ");
-    // A1Tiffany -> A1 Tiffany
-    line = line.replace(/^([A-Z]\d+)(?=\S)/, "$1 ");
-
-    line = line.replace(/(\S)(Featuring\s*–)/g, "$1\n    $2");
-
-
-    // 把 “X–Y” 两侧空格规整，但不强制加空格（避免破坏你原结构）
-    line = line.replace(
-      /\b(Co–producer|Co-producer|Producer|Executive Producer|Written–By|Written-By|Engineer|Mixed By|Mastered By|Vocals?|Guitar|Horns?|Percussion|Drums?|Bass|Keyboards?|Synth|Piano|Organ|Strings?)\b\s*–\s*/g,
-      "$1 – "
-    );
-
-    // 抽取末尾时长（3:49 / 12:34）
-    let dur = "";
-    const mDur = line.match(/\b(\d{1,2}:\d{2})\b\s*$/);
-    if (mDur) {
-      dur = mDur[1];
-      line = line.replace(/\b(\d{1,2}:\d{2})\b\s*$/, "").trim();
-    }
-
-    // 在 role-group 前强制换行并缩进（这一步是关键）
-    line = line.replace(roleGroupRe, "\n    $&");
-
-    // 把刚刚加进去的 "$&" 中 role-group 尾部多余空格整理一下
-    line = line.replace(/\n\s+([^\n]+)\s+/g, "\n    $1 ");
-
-    // 把 “\n    Producer – ” 这种多余空格再压一遍
-    line = line.replace(/\n    ([^–\n]+)\s*–\s*/g, "\n    $1 – ");
-
-    // 如果有时长，把时长放回“第一行末尾”
-    if (dur) {
-      const parts = line.split("\n");
-      parts[0] = parts[0].trimEnd() + " " + dur;
-      line = parts.join("\n");
-    }
-
-    // 行内去重（避免 Written–By 重复两次）
-    const segs = line.split("\n");
-    const uniq = [];
-    const seen = new Set();
-    for (const seg of segs) {
-      const key = seg.trim();
-      if (!key) continue;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      uniq.push(seg);
-    }
-    out.push(uniq.join("\n"));
-  }
-
-  // 每个曲目之间空一行
-  return out.join("\n\n").trim();
-}
 
   /* -------------------- Discogs collect -------------------- */
 
@@ -704,65 +662,61 @@ function compactTracksByBlocks(text) {
       } catch (e) {}
     }
     // tracks
-    try {
-      let trackText = "";
+    // tracks (use Discogs DOM structure, avoid rebuild/guess)
+  // tracks (MOST STABLE: just copy Discogs pre-formatted text)
+  try {
+    // Discogs 可能有多个 tracklist 容器，优先级从新到旧
+    const trackRoot =
+      document.querySelector("#tracklist") ||
+      document.querySelector("#release-tracklist") ||
+      document.querySelector("[data-tracklist]") ||
+      document.querySelector('section[id*="track"]') ||
+      null;
 
-      const tracklistTable = document.getElementById("tracklist");
-      if (tracklistTable) {
-        const trs = tracklistTable.getElementsByTagName("tr");
-        for (let i = 0; i < trs.length; i++) {
-          const tr = trs[i];
-          let pos = tr.getAttribute("data-track-position") || "";
-          const posEl = tr.querySelector(".tracklist_track_pos");
-          if (posEl) pos = cleanText(posEl.textContent) || pos;
+    if (!trackRoot) {
+      console.warn("[D2D] tracklist root not found");
+      data.tracks = "";
+    } else {
+      // 直接用 innerText 保留换行（关键！不要 textContent）
+      let t = trackRoot.innerText || "";
 
-          const titleEl = tr.querySelector(".tracklist_track_title");
-          const durEl = tr.querySelector(".tracklist_track_duration");
-          const title = titleEl ? cleanText(titleEl.textContent) : cleanText(tr.textContent);
-          const dur = durEl ? cleanText(durEl.textContent) : "";
+      // 轻微清理：去掉多余空行、行首尾空格
+      t = t
+        .replace(/\r/g, "")
+        .split("\n")
+        .map((x) => x.replace(/[ \t]+/g, " ").trimEnd())
+        .join("\n")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
 
-          if (title) trackText += `${pos || i + 1}. ${title}${dur ? " " + dur : ""}\n`;
+      data.tracks = prettifyDiscogsTracklist(t);
+
+      console.log("[D2D] tracks captured lines =", data.tracks.split("\n").length);
+    }
+  } catch (e) {
+    console.warn("[D2D] tracks collect failed:", e);
+    data.tracks = "";
+  }
+
+      // barcode：兜底从页面全文找 8-14 位
+      try {
+        const text = document.body.innerText || "";
+        const m = text.match(/\b(?:Barcode|EAN|UPC)\b[^\d]{0,20}(\d{8,14})/i);
+        if (m) data.barcode = m[1];
+      } catch (e) {}
+
+      // cover image
+      try {
+        const gallery = document.querySelector(".image_gallery");
+        const dataImages = gallery?.getAttribute("data-images");
+        if (dataImages) {
+          const images = JSON.parse(dataImages);
+          data.imgUrl = images?.[0]?.full || "";
         }
-      } else {
-        const releaseTracklist = document.getElementById("release-tracklist");
-        if (releaseTracklist) {
-          const trs = releaseTracklist.getElementsByTagName("tr");
-          for (let i = 0; i < trs.length; i++) {
-            const tr = trs[i];
-            const line = cleanText(tr.textContent);
-            if (line) trackText += line + "\n";
-          }
+        if (!data.imgUrl) {
+          data.imgUrl = document.querySelector('[property="og:image"]')?.content || "";
         }
-      }
-
-      // =========================
-      // [PATCH] 在送进 formatDiscogsTrackText 之前，先把“压扁的 credits + 时长”恢复成多行
-      // 这样不改 formatDiscogsTrackText 原逻辑，也能兼容 Tiffany / Clash / Queen / Pink Floyd 这种结构
-      // =========================
-      const patched = preFormatDenseDiscogs(trackText.trim());
-
-      data.tracks = compactTracksByBlocks(formatDiscogsTrackText(patched));
-    } catch (e) {}
-
-    // barcode：兜底从页面全文找 8-14 位
-    try {
-      const text = document.body.innerText || "";
-      const m = text.match(/\b(?:Barcode|EAN|UPC)\b[^\d]{0,20}(\d{8,14})/i);
-      if (m) data.barcode = m[1];
-    } catch (e) {}
-
-    // cover image
-    try {
-      const gallery = document.querySelector(".image_gallery");
-      const dataImages = gallery?.getAttribute("data-images");
-      if (dataImages) {
-        const images = JSON.parse(dataImages);
-        data.imgUrl = images?.[0]?.full || "";
-      }
-      if (!data.imgUrl) {
-        data.imgUrl = document.querySelector('[property="og:image"]')?.content || "";
-      }
-    } catch (e) {}
+      } catch (e) {}
 
     // description：不包含链接信息（也不放 Discogs url）
     try {
