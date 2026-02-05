@@ -201,6 +201,8 @@
 
   text = text.replace(/\bWritten\s*[\u2013\u2014-]\s*By\b/gi, "Written–By");
 
+  // ✅ NEW: 合并 “A 1” => “A1”（同理 B 2 / C 10）
+  text = text.replace(/(^|\n)([A-Z])\s+(\d{1,3})(?=\s)/g, "$1$2$3");
   // 1) A1Title -> A1 Title（字母+数字的曲号）
   //    只要后面是非空字符就补空格
   text = text.replace(/(^|\n)([A-Z]\d+)(?=\S)/g, "$1$2 ");
@@ -214,8 +216,9 @@
   text = text.replace(/(^|\n)(\d{1,3})(?=[A-Z0-9])/g, "$1$2 ");
 
   // Title 后遇到人员信息关键词时换行（补全更多关键字，兼容 Written–By / Co–producer）
+  // ✅ NEW: Featuring 也当作 credits 关键词
   text = text.replace(
-    /(–[^\n]+?)(?=(Vocals|Guitar|Horns|Percussion|Drums|Bass|Keyboards|Synth|Piano|Organ|Strings|Engineer|Producer|Written–By|Written-By|Co–producer|Co-producer))/g,
+    /(–[^\n]+?)(?=(Featuring|Vocals|Guitar|Horns|Percussion|Drums|Bass|Keyboards|Synth|Piano|Organ|Strings|Engineer|Producer|Written–By|Written-By|Co–producer|Co-producer))/g,
     "$1\n"
   );
 
@@ -296,7 +299,10 @@ function compactTracksByBlocks(text) {
   const t = String(text || "").replace(/\r/g, "").trim();
   if (!t) return "";
 
-  const lines = t.split("\n");
+  // ✅ NEW: 先把 “A 1 ” 合并成 “A1 ”
+  const t2 = t.replace(/(^|\n)([A-Z])\s+(\d{1,3})(?=\s)/g, "$1$2$3");
+  const lines = t2.split("\n");
+
 
   // 识别曲目标题行：A1 / A2 / B1 / C3 ...
   const isHeader = (s) =>
@@ -416,6 +422,7 @@ function compactTracksByBlocks(text) {
     .filter(Boolean);
 
   const ROLE_WORDS = [
+    "Featuring", // ✅ NEW
     "Co–producer", "Co-producer", "Producer", "Executive Producer",
     "Written–By", "Written-By", "Co–written–By", "Co-written-By",
     "Composed By", "Arranged By", "Engineer", "Mixed By", "Mastered By",
@@ -436,8 +443,13 @@ function compactTracksByBlocks(text) {
   const out = [];
 
   for (let line of lines) {
+    // ✅ NEW: 合并 “A 1” => “A1 ”
+    line = line.replace(/^([A-Z])\s+(\d{1,3})(?=\S)/, "$1$2 ");
     // A1Tiffany -> A1 Tiffany
     line = line.replace(/^([A-Z]\d+)(?=\S)/, "$1 ");
+
+    line = line.replace(/(\S)(Featuring\s*–)/g, "$1\n    $2");
+
 
     // 把 “X–Y” 两侧空格规整，但不强制加空格（避免破坏你原结构）
     line = line.replace(
