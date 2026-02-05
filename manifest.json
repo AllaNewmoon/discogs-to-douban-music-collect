@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Discogs → Douban Music Collect (Lite)",
+  "version": "0.2.0",
+  "description": "Collect from Discogs and auto-fill Douban music new subject (2-step flow).",
+  "permissions": ["storage", "tabs", "downloads"],
+  "host_permissions": [
+    "https://www.discogs.com/*",
+    "https://music.douban.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.discogs.com/release/*",
+        "https://www.discogs.com/master/*",
+        "https://music.douban.com/new_subject*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
