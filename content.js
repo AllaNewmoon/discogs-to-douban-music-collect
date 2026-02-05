@@ -12,6 +12,23 @@
     return String(v ?? "").replace(/\s+/g, " ").trim();
   }
 
+  function decodeHtmlEntities(s) {
+    const str = String(s ?? "");
+    // 快速处理常见情况（避免创建节点也能解决 90%）
+    const quick = str
+      .replace(/&#x27;/gi, "'")
+      .replace(/&#39;/g, "'")
+      .replace(/&amp;/gi, "&")
+      .replace(/&quot;/gi, '"')
+      .replace(/&lt;/gi, "<")
+      .replace(/&gt;/gi, ">");
+
+    // 兜底：用 textarea 解码任意实体（包含 &#xNNNN;）
+    const ta = document.createElement("textarea");
+    ta.innerHTML = quick;
+    return ta.value;
+  }
+
   function sanitizeFilename(value) {
     return cleanText(value)
       .replace(/[^\x20-\x7E]/g, "") // 去掉非 ASCII（可选：保留也行，但下载更稳）
@@ -69,7 +86,8 @@
 
   // 1) 不把 And / & 当分隔符，避免组合名误拆
   function splitArtistsTo3(artistsText) {
-    const raw = cleanText(artistsText);
+    const raw = cleanText(decodeHtmlEntities(artistsText));
+
 
     // 只按更可靠的“多人分隔符”拆：
     // 逗号、分号、斜杠、Featuring/feat/ft
