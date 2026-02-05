@@ -183,6 +183,8 @@
 
   // A1Title -> A1 Title
   text = text.replace(/(^|\n)([A-Z]\d+)(?=[A-Za-z])/g, "$1$2 ");
+  // 纯数字曲号：1Title -> 1 Title  （同时兼容 10Title）
+  text = text.replace(/(^|\n)(\d{1,3})(?=[A-Za-z])/g, "$1$2 ");
 
   // Title 后遇到人员信息关键词时换行（补全更多关键字，兼容 Written–By / Co–producer）
   text = text.replace(
@@ -460,21 +462,51 @@ function compactTracksByBlocks(text) {
 
       // artists text（尽量取结构化链接）
       let artistsText = "";
-      const profile = document.querySelector(".profile");
-      if (profile) {
-        const artistLinks = profile.querySelectorAll("a");
-        if (artistLinks?.length) {
-          artistsText = Array.from(artistLinks)
-            .slice(0, 6)
-            .map((a) => cleanText(a.title || a.textContent))
-            .join(", ");
+
+      // [PATCH A] 只抓 Discogs 的 artist 链接，优先 title / aria-label，再 fallback textContent
+      function collectArtistNamesFromContainer(container) {
+        if (!container) return "";
+
+        const links = Array.from(container.querySelectorAll("a[href*='/artist/']"));
+        const names = links
+          .map((a) =>
+            cleanText(
+              a.getAttribute("title") ||
+              a.getAttribute("aria-label") ||
+              a.textContent
+            )
+          )
+          .map(cleanArtistName) // 你原来就有：去掉(1)(2) / * / ✱
+          .filter(Boolean);
+
+        // 去重（保持顺序）
+        const uniq = [];
+        const seen = new Set();
+        for (const n of names) {
+          if (seen.has(n)) continue;
+          seen.add(n);
+          uniq.push(n);
         }
+        return uniq.join(", ");
       }
 
+      const profile = document.querySelector(".profile");
+      if (profile) {
+        artistsText = collectArtistNamesFromContainer(profile);
+      }
+
+      // fallback：从 h1 里再试一次（有些页面 profile 不同结构）
       if (!artistsText && h1) {
-        const spans = h1.querySelectorAll("span");
-        if (spans?.length) {
-          artistsText = Array.from(spans).map((s) => cleanText(s.textContent)).join(", ");
+        artistsText = collectArtistNamesFromContainer(h1);
+
+        // 再 fallback：你原来的 span 方案保留（防止极端页面没 artist 链接）
+        if (!artistsText) {
+          const spans = h1.querySelectorAll("span");
+          if (spans?.length) {
+            artistsText = Array.from(spans)
+              .map((s) => cleanText(s.textContent))
+              .join(", ");
+          }
         }
       }
 
@@ -482,6 +514,7 @@ function compactTracksByBlocks(text) {
       data.artist0 = a0;
       data.artist1 = a1;
       data.artist2 = a2;
+
       // [PATCH] Discogs 常见 Various / Various Artists：保证 artist0 不为空
       if (!data.artist0) {
         const h1Text = cleanText(document.querySelector("h1")?.textContent || "");
@@ -489,7 +522,6 @@ function compactTracksByBlocks(text) {
           data.artist0 = "Various Artists";
         }
       }
-
     } catch (e) {}
 
     // profile block: genre/date/media/label
@@ -722,6 +754,41 @@ function compactTracksByBlocks(text) {
       box-shadow: 0 6px 20px rgba(0,0,0,.2);
     `;
 
+    // [PATCH] Resolve full artist names by visiting /artist/ pages (needs background support)
+    async function resolveArtistsFromDiscogsPages() {
+      const isArtistUrl = (u) => /\/artist\/\d+/.test(String(u || ""));
+
+      // ✅ 优先主标题里的 artist（只要 /artist/数字）
+      const h1Links = Array.from(document.querySelectorAll("h1 a[href*='/artist/']"))
+        .map((a) => a.href)
+        .filter((u) => u && isArtistUrl(u));
+
+      // ✅ 再补 profile 里的 artist（只要 /artist/数字）
+      const profileLinks = Array.from(document.querySelectorAll(".profile a[href*='/artist/']"))
+        .map((a) => a.href)
+        .filter((u) => u && isArtistUrl(u));
+
+      // 合并 + 去重（保持顺序）
+      const uniq = [];
+      const seen = new Set();
+      for (const u of [...h1Links, ...profileLinks]) {
+        if (seen.has(u)) continue;
+        seen.add(u);
+        uniq.push(u);
+      }
+
+      const target = uniq.slice(0, 3);
+      console.log("[D2D] artist target urls:", target); // 你可以看是不是 /artist/数字
+
+      if (!target.length) return "";
+
+      const resp = await bgSend({ type: "RESOLVE_ARTISTS", urls: target });
+      if (!resp?.ok || !Array.isArray(resp.names) || !resp.names.length) return "";
+
+      return resp.names.join(", ");
+    }
+
+
     btn.addEventListener("click", async () => {
       try {
         const draft = collectDiscogsMusic();
@@ -730,6 +797,25 @@ function compactTracksByBlocks(text) {
 
         // ✅ 自动下载封面（在打开豆瓣前就触发）
         await maybeDownloadCover(draft);
+
+        // ✅ [PATCH] 尝试把艺人名升级成“artist 页的规范名/Real Name”
+        try {
+          const resolvedArtistsText = await resolveArtistsFromDiscogsPages();
+          if (resolvedArtistsText) {
+            const [a0, a1, a2] = splitArtistsTo3(resolvedArtistsText);
+
+            // 仅在解析到更好的名字时覆盖（不强行覆盖空值）
+            if (a0) draft.artist0 = a0;
+            if (a1) draft.artist1 = a1;
+            if (a2) draft.artist2 = a2;
+
+            console.log("[D2D] resolved artists:", draft.artist0, draft.artist1, draft.artist2);
+          } else {
+            console.log("[D2D] resolved artists: (none)");
+          }
+        } catch (e) {
+          console.warn("[D2D] resolve artists failed:", e);
+        }
 
         const resp = await bgSend({ type: "SAVE_DRAFT", draft });
         if (!resp?.ok) console.warn("[D2D] SAVE_DRAFT failed:", resp?.error);
