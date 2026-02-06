@@ -605,17 +605,39 @@
 
         if (valueRename[v]) v = valueRename[v];
 
-        if (k === "genre" && !data.genre) data.genre = v;
+        if (k === "genre" && !data.genre) {
+          data.genre = v;
+          console.log("[D2D] Genre extracted from profile:", data.genre);
+        }
         if (k === "media" && !data.media) data.media = v;
         if (k === "label" && !data.label) data.label = cleanArtistName(v);
         if (k === "date" && !data.date) data.date = normalizeDateToYYYYMMDD(v);
       }
-    } catch (e) {}
+    } catch (e) {
+    console.warn("[D2D] Error extracting genre from profile:", e);
+    }
+
+    // [PATCH] genre兜底：从更通用的“key/value”块抓取 genre 信息
+    if (!data.genre) {
+      try {
+        // 最后兜底：从页面文本抓
+        if (!data.genre) {
+          const body = document.body.innerText || "";
+          const m = body.match(/\bGenre\b\s*[:：]\s*([^\n,;\/]+)/i); // 直接匹配 'Genre' 和它后的值
+          if (m && m[1]) {
+            data.genre = m[1].trim();
+            console.log("[D2D] Genre extracted from body text:", data.genre);
+          }
+        }
+      } catch (e) {
+        console.warn("[D2D] Error extracting genre:", e);
+      }
+    }
 
     // [PATCH] 日期兜底：Discogs 页面结构变化时，从更通用的“key/value”块抓 Released/Year
     if (!data.date) {
       try {
-        // 1) 新版 release 页面常见：#release-header 的表格行（你已有，但有时 children[2] 不存在）
+        // 1) 新版 release 页面常见：#release-header 的表格行
         const header = document.getElementById("release-header");
         if (header) {
           const rows = header.querySelectorAll("tr, .content tr, .profile tr, .table tr");
@@ -666,7 +688,7 @@
           }
         }
 
-        // 3) 最后兜底：从页面文本抓（最粗暴但几乎必命中）
+        // 3) 最后兜底：从页面文本抓
         if (!data.date) {
           const body = document.body.innerText || "";
           const m =
@@ -677,8 +699,8 @@
         }
       } catch (e) {}
     }
+
     // tracks
-    // tracks (use Discogs DOM structure, avoid rebuild/guess)
   // tracks (MOST STABLE: just copy Discogs pre-formatted text)
   try {
     // Discogs 可能有多个 tracklist 容器，优先级从新到旧
@@ -693,7 +715,7 @@
       console.warn("[D2D] tracklist root not found");
       data.tracks = "";
     } else {
-      // 直接用 innerText 保留换行（关键！不要 textContent）
+      // 直接用 innerText 保留换行
       let t = trackRoot.innerText || "";
 
       // 轻微清理：去掉多余空行、行首尾空格
@@ -802,12 +824,12 @@
     async function resolveArtistsFromDiscogsPages() {
       const isArtistUrl = (u) => /\/artist\/\d+/.test(String(u || ""));
 
-      // ✅ 优先主标题里的 artist（只要 /artist/数字）
+      // 优先主标题里的 artist（只要 /artist/数字）
       const h1Links = Array.from(document.querySelectorAll("h1 a[href*='/artist/']"))
         .map((a) => a.href)
         .filter((u) => u && isArtistUrl(u));
 
-      // ✅ 再补 profile 里的 artist（只要 /artist/数字）
+      // 再补 profile 里的 artist（只要 /artist/数字）
       const profileLinks = Array.from(document.querySelectorAll(".profile a[href*='/artist/']"))
         .map((a) => a.href)
         .filter((u) => u && isArtistUrl(u));
@@ -838,11 +860,12 @@
         const draft = collectDiscogsMusic();
         console.log("[D2D] draft.date =", draft.date, "raw url:", draft.url);
         console.log("[D2D] collected:", draft);
+        console.log("[D2D] Genre extracted from profile:", draft.genre);
 
-        // ✅ 自动下载封面（在打开豆瓣前就触发）
+        // 自动下载封面（在打开豆瓣前就触发）
         await maybeDownloadCover(draft);
 
-        // ✅ [PATCH] 尝试把艺人名升级成“artist 页的规范名/Real Name”
+        // [PATCH] 尝试把艺人名升级成“artist 页的规范名/Real Name”
         try {
           const resolvedArtistsText = await resolveArtistsFromDiscogsPages();
           if (resolvedArtistsText) {
@@ -917,7 +940,7 @@
     // 双保险：description 再清一遍链接
     if (draft.description) draft.description = stripUrls(draft.description);
 
-    // class 版（参考你贴的插件 DoubanMusicPage2）
+    // class 版
     try {
       const basicItems = document.getElementsByClassName("item basic");
       if (basicItems?.length >= 3) {
@@ -1000,7 +1023,7 @@
     const resp = await bgSend({ type: "GET_DRAFT" });
     if (resp?.ok && resp.draft) draft = resp.draft;
 
-    // 第2步可能需要从 douban localStorage 取（同域续命）
+    // 第2步可能需要从 douban localStorage 取
     if (!draft) {
       const local = localStorage.getItem(LOCAL_KEY);
       if (local) {
