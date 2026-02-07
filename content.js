@@ -16,6 +16,7 @@
       "Hip Hop": "Rap 说唱",
       "Electronic": "Electronic 电子",
       "Reggae": "Reggee 雷鬼",
+      "Funk": "Funk/Soul/R&B 放克/灵歌/R&B",
       // 添加更多的映射...
     };
 
@@ -141,6 +142,8 @@
 
     // ===== 统一曲号识别（只要是曲号开头，就算 header）=====
     const trackTokenRe = /^([A-Z]\d{1,3}|[A-Z]|\d{1,3})\b/;
+    // 无曲号曲目常见：标题 + 结尾时长
+    const titleWithDurationRe = /^.+\s+\d{1,2}:\d{2}\s*$/;
 
     // ===== 标题识别（按你的意思改写）=====
     function isHeader(line, prevLine) {
@@ -148,8 +151,10 @@
       if (!s) return false;
       if (dropLine(s) || isDurationOnly(s)) return false;
 
-      // ✅ 你的规则：只要开头是曲号，无条件当 header（不管这一行里有没有 –）
+      // 只要开头是曲号，无条件当 header（不管这一行里有没有 –）
       if (trackTokenRe.test(s)) return true;
+      // ✅ 新规则：无曲号但“以时长结尾”的行，也当作 header（每行一首歌）
+      if (titleWithDurationRe.test(s) && !creditRe.test(s)) return true;
 
       // 无曲号标题：必须空行后出现 + 不能是 credits + 不能是 “X – Y”
       const prevIsBlank = !String(prevLine || "").trim();
@@ -473,6 +478,41 @@
     return 0;
   }
 
+  function extractNotesLikeCopy(notesEl) {
+    if (!notesEl) return "";
+
+    // ✅ 克隆一份，避免改动页面
+    const root = notesEl.cloneNode(true);
+
+    // 1) 去掉明显不该进简介的东西（可按需增减）
+    root.querySelectorAll("script, style, noscript, button").forEach((n) => n.remove());
+
+    // 2) 把 <br> 变成换行
+    root.querySelectorAll("br").forEach((br) => br.replaceWith("\n"));
+
+    // 3) 块级元素后面补一个换行（模拟复制的换行感）
+    root.querySelectorAll("p, div, li, tr, section").forEach((el) => {
+      el.appendChild(document.createTextNode("\n"));
+    });
+
+    // 4) 取文本（保留我们注入的 \n）
+    let t = root.textContent || "";
+
+    // 5) 清理：去掉开头 “Notes/Notes:” 标题
+    t = t.replace(/^\s*notes?\s*:?\s*\n*/i, "");
+
+    // 6) 统一空白，但保留换行
+    t = t
+      .replace(/\r/g, "")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n[ \t]+/g, "\n")
+      .replace(/[ \t]{2,}/g, " ")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+
+    return t;
+  }
+
   /* -------------------- Discogs collect -------------------- */
 
   function collectDiscogsMusic() {
@@ -758,11 +798,20 @@
 
     // description：不包含链接信息（也不放 Discogs url）
     try {
-      let notesText = "";
-      const notes = document.getElementById("notes") || document.getElementById("release-notes");
-      if (notes) notesText = cleanText(notes.textContent);
+      const notesEl = document.getElementById("notes") || document.getElementById("release-notes");
+      let notesText = extractNotesLikeCopy(notesEl);
 
+      // 去链接（你原来的）
       notesText = stripUrls(notesText);
+
+      // 去重（非常建议保留：Discogs 有时确实会重复渲染两份）
+      if (notesText) {
+        const s = notesText.trim();
+        const mid = Math.floor(s.length / 2);
+        if (s.slice(0, mid).trim() === s.slice(mid).trim()) {
+          notesText = s.slice(0, mid).trim();
+        }
+      }
 
       const suffix = "本条目由 Discogs → 豆瓣音乐 Collect 插件自动生成，如有信息错误请更正。";
       data.description = (notesText ? `${notesText}\n\n========\n\n${suffix}` : suffix).trim();
